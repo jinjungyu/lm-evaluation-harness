@@ -494,6 +494,7 @@ def evaluate(
     # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
     for task_output in eval_tasks:
         task = task_output.task
+        # import code; code.interact('evaluate line 497',local=dict(globals(), **locals()))
         task.apply_filters()
 
         ### Collect values of metrics on all datapoints ###

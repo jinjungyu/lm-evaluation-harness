@@ -4,6 +4,7 @@ from . import (
     dummy,
     gguf,
     huggingface,
+    huggingface_sps,
     mamba_lm,
     nemo_lm,
     neuralmagic,
