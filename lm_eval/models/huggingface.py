@@ -186,6 +186,14 @@ class HFLM(TemplateLM):
         )
 
         # if we passed `pretrained` as a string, initialize our model now
+
+        # added for assisted or contrastive decoding
+        assistant_pretrained = kwargs.pop('assistant_pretrained', None)
+        sleb_list_txt = kwargs.pop('sleb_list', None)
+        if sleb_list_txt is not None:
+            with open(sleb_list_txt, 'r') as f:
+                sleb_list = sorted(map(int, f.read().split(',')))
+        
         if isinstance(pretrained, str):
             self._create_model(
                 pretrained=pretrained,
@@ -204,12 +212,49 @@ class HFLM(TemplateLM):
                 gguf_file=gguf_file,
                 **kwargs,
             )
-
         # access self._model through self.model property outside this method
         if isinstance(self.model, torch.nn.Module):
             self.model.eval()
             self.model.tie_weights()
-
+        
+        if assistant_pretrained is not None: # pretrained != assistant_pretrained
+            if pretrained == assistant_pretrained:
+                from accelerate import init_empty_weights
+                with init_empty_weights():
+                    assistant_model = transformers.AutoModelForCausalLM.from_config(self._model.config)
+                assistant_model.load_state_dict(self._model.state_dict(), strict=False, assign=True)
+                assistant_model.model.layers = torch.nn.ModuleList([layer for layer_idx, layer in enumerate(assistant_model.model.layers) if layer_idx not in sleb_list])
+                self._assistant_model = assistant_model.to(self._model.device)
+            else:
+                model = self._model
+                
+                self._create_model(
+                    pretrained=assistant_pretrained,
+                    revision=revision,
+                    dtype=dtype,
+                    trust_remote_code=trust_remote_code,
+                    parallelize=parallelize,
+                    gpus=gpus,
+                    max_memory_per_gpu=max_memory_per_gpu,
+                    max_cpu_memory=max_cpu_memory,
+                    offload_folder=offload_folder,
+                    peft=peft,
+                    delta=delta,
+                    autogptq=autogptq,
+                    gptqmodel=gptqmodel,
+                    gguf_file=gguf_file,
+                    **kwargs,
+                )
+                
+                # access self._model through self.model property outside this method
+                if isinstance(self.model, torch.nn.Module):
+                    self.model.eval()
+                    self.model.tie_weights()
+                    
+                self._assistant_model = self._model
+                self._model = model
+            
+            
         self.truncation = truncation
         self.logits_cache = logits_cache
         self.vocab_size = self.tokenizer.vocab_size
@@ -394,6 +439,14 @@ class HFLM(TemplateLM):
             return self.accelerator.unwrap_model(self._model)
         else:
             return self._model
+        
+    @property
+    def assistant_model(self):
+        # returns the model, unwrapping it if using Accelerate
+        if hasattr(self, "accelerator"):
+            return self.accelerator.unwrap_model(self._assistant_model)
+        else:
+            return self._assistant_model
 
     @property
     def eot_token_id(self):
@@ -890,6 +943,11 @@ class HFLM(TemplateLM):
 
         if do_sample is False and generation_kwargs.get("temperature") == 0.0:
             generation_kwargs.pop("temperature")
+            
+        # added for assisted or contrastive decoding
+        if getattr(self, 'assistant_model', None) is not None:
+            generation_kwargs['assistant_model'] = self.assistant_model
+            
         # build stopping criteria
         stopping_criteria = stop_sequences_criteria(
             self.tokenizer, stop, context.shape[1], context.shape[0]
